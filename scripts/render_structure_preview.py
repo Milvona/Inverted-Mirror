@@ -7,31 +7,35 @@ from typing import Iterable
 from PIL import Image, ImageDraw
 
 from bedrock_nbt import read_root_compound
+from coordinate_order import coords_from_mc_index, mc_index
 
 
 COLORS = {
     "air": (0, 0, 0, 0),
-    "bookshelf": (196, 111, 35, 255),
-    "dark_oak_planks": (78, 45, 26, 255),
-    "spruce_planks": (126, 84, 45, 255),
-    "deepslate_bricks": (48, 51, 58, 255),
-    "deepslate_tiles": (31, 35, 43, 255),
-    "stone_bricks": (116, 121, 121, 255),
-    "sea_lantern": (205, 255, 243, 255),
-    "glowstone": (255, 220, 84, 255),
-    "shroomlight": (255, 162, 74, 255),
-    "pink_stained_glass": (255, 82, 190, 230),
-    "lime_stained_glass": (138, 255, 77, 230),
-    "yellow_stained_glass": (255, 242, 66, 230),
-    "cyan_stained_glass": (56, 232, 250, 230),
-    "white_stained_glass": (255, 255, 255, 235),
-    "blue_stained_glass": (58, 125, 255, 230),
-    "packed_ice": (112, 199, 255, 255),
-    "oxidized_copper": (54, 181, 165, 255),
-    "weathered_copper": (78, 143, 128, 255),
-    "gold_block": (255, 201, 36, 255),
-    "moss_block": (72, 122, 58, 255),
-    "azalea_leaves": (62, 151, 76, 255),
+    "bookshelf": (202, 112, 32, 255),
+    "dark_oak_planks": (83, 48, 27, 255),
+    "spruce_planks": (130, 84, 43, 255),
+    "dark_oak_log": (57, 35, 23, 255),
+    "deepslate_bricks": (68, 72, 80, 255),
+    "deepslate_tiles": (48, 54, 64, 255),
+    "stone_bricks": (136, 140, 136, 255),
+    "iron_bars": (166, 168, 160, 255),
+    "sea_lantern": (214, 255, 244, 255),
+    "glowstone": (255, 224, 83, 255),
+    "shroomlight": (255, 163, 72, 255),
+    "pink_stained_glass": (255, 75, 188, 238),
+    "lime_stained_glass": (137, 255, 75, 238),
+    "yellow_stained_glass": (255, 244, 60, 238),
+    "cyan_stained_glass": (50, 232, 252, 238),
+    "white_stained_glass": (255, 255, 255, 242),
+    "blue_stained_glass": (58, 128, 255, 236),
+    "packed_ice": (117, 205, 255, 255),
+    "oxidized_copper": (42, 196, 176, 255),
+    "weathered_copper": (88, 163, 142, 255),
+    "cut_copper": (178, 107, 55, 255),
+    "gold_block": (255, 202, 36, 255),
+    "moss_block": (75, 123, 58, 255),
+    "azalea_leaves": (64, 151, 76, 255),
 }
 
 LIGHT_BLOCKS = {
@@ -49,37 +53,21 @@ LIGHT_BLOCKS = {
 
 def load_structure(path: str) -> tuple[list[int], list[str], list[int]]:
     root = read_root_compound(path)
-    size = root["size"]
     structure = root["structure"]
-    blocks = structure["block_indices"][0]
-    palette = [
-        entry["name"].split("minecraft:", 1)[-1]
-        for entry in structure["palette"]["default"]["block_palette"]
-    ]
-    return blocks, palette, size
+    palette = [entry["name"].split("minecraft:", 1)[-1] for entry in structure["palette"]["default"]["block_palette"]]
+    return structure["block_indices"][0], palette, root["size"]
 
 
-def idx(x: int, y: int, z: int, sx: int, sz: int) -> int:
-    return x + z * sx + y * sx * sz
+def idx(x: int, y: int, z: int, sx: int, sy: int, sz: int) -> int:
+    return mc_index(x, y, z, sx, sy, sz)
 
 
 def iter_non_air(blocks: list[int], palette: list[str], size: list[int]) -> Iterable[tuple[int, int, int, str]]:
     sx, sy, sz = size
-    for y in range(sy):
-        base_y = y * sx * sz
-        for z in range(sz):
-            base = base_y + z * sx
-            for x in range(sx):
-                palette_id = blocks[base + x]
-                if palette_id > 0:
-                    yield x, y, z, palette[palette_id]
-
-
-def bounds(points: list[tuple[int, int, int, str]]) -> tuple[int, int, int, int, int, int]:
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    zs = [p[2] for p in points]
-    return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+    for i, v in enumerate(blocks):
+        if v > 0:
+            x, y, z = coords_from_mc_index(i, sx, sy, sz)
+            yield x, y, z, palette[v]
 
 
 def shade(color: tuple[int, int, int, int], factor: float) -> tuple[int, int, int, int]:
@@ -91,88 +79,125 @@ def shade(color: tuple[int, int, int, int], factor: float) -> tuple[int, int, in
     )
 
 
-def draw_iso(points: list[tuple[int, int, int, str]], out_path: str, canvas: tuple[int, int]) -> None:
-    img = Image.new("RGBA", canvas, (13, 15, 21, 255))
-    draw = ImageDraw.Draw(img, "RGBA")
+def bounds(points: list[tuple[int, int, int, str]]) -> tuple[int, int, int, int, int, int]:
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    zs = [p[2] for p in points]
+    return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+
+
+BG = (13, 15, 21, 255)
+
+
+def save_fitted(img: Image.Image, out_path: str, canvas: tuple[int, int], fill: float = 0.88) -> None:
+    px = img.load()
+    min_x, min_y = img.size
+    max_x = max_y = -1
+    for y in range(img.size[1]):
+        for x in range(img.size[0]):
+            if px[x, y] != BG:
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+    if max_x < 0:
+        img.convert("RGB").save(out_path)
+        return
+    pad = 18
+    crop = img.crop((
+        max(0, min_x - pad),
+        max(0, min_y - pad),
+        min(img.size[0], max_x + pad + 1),
+        min(img.size[1], max_y + pad + 1),
+    ))
+    scale = min(canvas[0] * fill / crop.size[0], canvas[1] * fill / crop.size[1])
+    resized = crop.resize((max(1, int(crop.size[0] * scale)), max(1, int(crop.size[1] * scale))), Image.Resampling.LANCZOS)
+    fitted = Image.new("RGBA", canvas, BG)
+    fitted.alpha_composite(resized, ((canvas[0] - resized.size[0]) // 2, (canvas[1] - resized.size[1]) // 2))
+    fitted.convert("RGB").save(out_path)
+
+
+def draw_iso_voxels(
+    points: list[tuple[int, int, int, str]],
+    out_path: str,
+    canvas: tuple[int, int],
+    cutaway: bool = False,
+    fill: float = 0.88,
+    max_scale: float = 8.0,
+) -> None:
+    if cutaway:
+        points = [
+            p for p in points
+            if not (p[2] > 68 and 40 <= p[1] <= 112 and 45 <= p[0] <= 83 and p[3] not in LIGHT_BLOCKS)
+        ]
     min_x, max_x, min_y, max_y, min_z, max_z = bounds(points)
 
-    def project(x: float, y: float, z: float, scale: float) -> tuple[float, float]:
-        return (x - z) * scale, (x + z) * scale * 0.47 - y * scale * 0.82
+    def project(x: float, y: float, z: float, s: float) -> tuple[float, float]:
+        return (x - z) * s, (x + z) * s * 0.5 - y * s
 
-    corners = [
-        project(x, y, z, 1.0)
-        for x in (min_x, max_x)
-        for y in (min_y, max_y)
-        for z in (min_z, max_z)
-    ]
-    proj_w = max(p[0] for p in corners) - min(p[0] for p in corners)
-    proj_h = max(p[1] for p in corners) - min(p[1] for p in corners)
-    scale = min((canvas[0] - 90) / max(1, proj_w), (canvas[1] - 70) / max(1, proj_h), 7.0)
-    corners = [
-        project(x, y, z, scale)
-        for x in (min_x, max_x)
-        for y in (min_y, max_y)
-        for z in (min_z, max_z)
-    ]
+    corners = [project(x, y, z, 1.0) for x in (min_x, max_x) for y in (min_y, max_y) for z in (min_z, max_z)]
+    raw_w = max(p[0] for p in corners) - min(p[0] for p in corners)
+    raw_h = max(p[1] for p in corners) - min(p[1] for p in corners)
+    scale = min((canvas[0] * fill) / max(1, raw_w), (canvas[1] * fill) / max(1, raw_h), max_scale)
+    corners = [project(x, y, z, scale) for x in (min_x, max_x) for y in (min_y, max_y) for z in (min_z, max_z)]
     ox = canvas[0] / 2 - (max(p[0] for p in corners) + min(p[0] for p in corners)) / 2
     oy = canvas[1] / 2 - (max(p[1] for p in corners) + min(p[1] for p in corners)) / 2
 
-    items = sorted(points, key=lambda p: p[0] + p[2] + p[1] * 0.65)
-    px_size = max(3, int(scale * 0.85))
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    s = scale
+    h = s
+    items = sorted(points, key=lambda p: (p[0] + p[2], p[1], p[2]))
     for x, y, z, name in items:
-        px, py = project(x, y, z, scale)
+        px, py = project(x, y, z, s)
         px += ox
         py += oy
-        color = COLORS.get(name, (210, 210, 210, 255))
-        depth = 0.78 + 0.22 * ((y - min_y) / max(1, max_y - min_y))
+        top = [(px, py - h), (px + s, py - h / 2), (px, py), (px - s, py - h / 2)]
+        left = [(px - s, py - h / 2), (px, py), (px, py + h), (px - s, py + h / 2)]
+        right = [(px, py), (px + s, py - h / 2), (px + s, py + h / 2), (px, py + h)]
+        base = COLORS.get(name, (210, 210, 210, 255))
         if name in LIGHT_BLOCKS:
-            glow = max(5, px_size + 2)
-            draw.ellipse((px - glow, py - glow, px + glow, py + glow), fill=(color[0], color[1], color[2], 70))
-            draw.ellipse((px - px_size, py - px_size, px + px_size, py + px_size), fill=color)
+            glow = int(max(4, s * 1.4))
+            draw.ellipse((px - glow, py - glow, px + glow, py + glow), fill=(base[0], base[1], base[2], 42))
+            top_c = shade(base, 1.18)
+            left_c = shade(base, 0.96)
+            right_c = shade(base, 1.05)
         else:
-            draw.rectangle((px - px_size, py - px_size, px + px_size, py + px_size), fill=shade(color, depth))
+            top_c = shade(base, 1.08)
+            left_c = shade(base, 0.72)
+            right_c = shade(base, 0.88)
+        draw.polygon(left, fill=left_c)
+        draw.polygon(right, fill=right_c)
+        draw.polygon(top, fill=top_c)
+    save_fitted(img, out_path, canvas, fill)
 
-    img.convert("RGB").save(out_path)
 
-
-def draw_elevation(
-    blocks: list[int],
-    palette: list[str],
-    size: list[int],
-    out_path: str,
-    axis: str,
-    canvas: tuple[int, int],
-) -> None:
+def draw_elevation(blocks: list[int], palette: list[str], size: list[int], out_path: str, mode: str, canvas: tuple[int, int]) -> None:
     sx, sy, sz = size
-    img = Image.new("RGBA", canvas, (13, 15, 21, 255))
-    draw = ImageDraw.Draw(img, "RGBA")
-    points = list(iter_non_air(blocks, palette, size))
-    min_x, max_x, min_y, max_y, min_z, max_z = bounds(points)
-    w = max_x - min_x + 1 if axis == "front" else max_z - min_z + 1
+    pts = list(iter_non_air(blocks, palette, size))
+    min_x, max_x, min_y, max_y, min_z, max_z = bounds(pts)
+    w = max_x - min_x + 1 if mode == "front" else max_z - min_z + 1
     h = max_y - min_y + 1
-    scale = min((canvas[0] - 60) / w, (canvas[1] - 55) / h, 8.0)
+    scale = min((canvas[0] - 60) / w, (canvas[1] - 60) / h, 7.0)
     ox = (canvas[0] - w * scale) / 2
-    oy = canvas[1] - 28 - (canvas[1] - 55 - h * scale) / 2
-
-    if axis == "front":
+    oy = canvas[1] - 30 - (canvas[1] - 60 - h * scale) / 2
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    if mode == "front":
         for y in range(min_y, max_y + 1):
             for x in range(min_x, max_x + 1):
                 chosen = 0
-                chosen_z = min_z
+                depth = 0.8
                 for z in range(max_z, min_z - 1, -1):
-                    value = blocks[idx(x, y, z, sx, sz)]
-                    if value > 0:
-                        chosen = value
-                        chosen_z = z
+                    v = blocks[idx(x, y, z, sx, sy, sz)]
+                    if v > 0:
+                        chosen = v
+                        depth = 0.68 + 0.32 * ((z - min_z) / max(1, max_z - min_z))
                         break
                 if chosen:
                     name = palette[chosen]
-                    depth = 0.72 + 0.28 * ((chosen_z - min_z) / max(1, max_z - min_z))
-                    color = COLORS.get(name, (210, 210, 210, 255))
-                    if name in LIGHT_BLOCKS:
-                        color = shade(color, 1.08)
-                    else:
-                        color = shade(color, depth)
+                    factor = 1.15 if name in LIGHT_BLOCKS else depth
+                    color = shade(COLORS.get(name, (210, 210, 210, 255)), factor)
                     x0 = ox + (x - min_x) * scale
                     y0 = oy - (y - min_y + 1) * scale
                     draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=color)
@@ -180,61 +205,90 @@ def draw_elevation(
         for y in range(min_y, max_y + 1):
             for z in range(min_z, max_z + 1):
                 chosen = 0
-                chosen_x = min_x
+                depth = 0.8
                 for x in range(min_x, max_x + 1):
-                    value = blocks[idx(x, y, z, sx, sz)]
-                    if value > 0:
-                        chosen = value
-                        chosen_x = x
+                    v = blocks[idx(x, y, z, sx, sy, sz)]
+                    if v > 0:
+                        chosen = v
+                        depth = 0.68 + 0.32 * ((max_x - x) / max(1, max_x - min_x))
                         break
                 if chosen:
                     name = palette[chosen]
-                    depth = 0.72 + 0.28 * ((max_x - chosen_x) / max(1, max_x - min_x))
-                    color = COLORS.get(name, (210, 210, 210, 255))
-                    if name in LIGHT_BLOCKS:
-                        color = shade(color, 1.08)
-                    else:
-                        color = shade(color, depth)
+                    factor = 1.15 if name in LIGHT_BLOCKS else depth
+                    color = shade(COLORS.get(name, (210, 210, 210, 255)), factor)
                     x0 = ox + (z - min_z) * scale
                     y0 = oy - (y - min_y + 1) * scale
                     draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=color)
-
-    img.convert("RGB").save(out_path)
+    save_fitted(img, out_path, canvas, 0.92)
 
 
 def draw_top(blocks: list[int], palette: list[str], size: list[int], out_path: str, canvas: tuple[int, int]) -> None:
     sx, sy, sz = size
-    img = Image.new("RGBA", canvas, (13, 15, 21, 255))
-    draw = ImageDraw.Draw(img, "RGBA")
-    points = list(iter_non_air(blocks, palette, size))
-    min_x, max_x, min_y, max_y, min_z, max_z = bounds(points)
+    pts = list(iter_non_air(blocks, palette, size))
+    min_x, max_x, min_y, max_y, min_z, max_z = bounds(pts)
     w = max_x - min_x + 1
     h = max_z - min_z + 1
-    scale = min((canvas[0] - 70) / w, (canvas[1] - 70) / h, 8.5)
+    scale = min((canvas[0] - 70) / w, (canvas[1] - 70) / h, 7.5)
     ox = (canvas[0] - w * scale) / 2
     oy = (canvas[1] - h * scale) / 2
-
-    # Draw every occupied layer with transparency instead of only the top block.
-    # This makes the 2.5-turn rising spiral readable in plan view.
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
     for y in range(min_y, max_y + 1):
-        height_factor = 0.55 + 0.45 * ((y - min_y) / max(1, max_y - min_y))
+        hf = 0.58 + 0.42 * ((y - min_y) / max(1, max_y - min_y))
         for z in range(min_z, max_z + 1):
             for x in range(min_x, max_x + 1):
-                value = blocks[idx(x, y, z, sx, sz)]
-                if value <= 0:
+                v = blocks[idx(x, y, z, sx, sy, sz)]
+                if v <= 0:
                     continue
-                name = palette[value]
-                color = shade(COLORS.get(name, (210, 210, 210, 255)), 1.15 if name in LIGHT_BLOCKS else height_factor)
-                alpha = 235 if name in LIGHT_BLOCKS else 72
+                name = palette[v]
+                color = shade(COLORS.get(name, (210, 210, 210, 255)), 1.18 if name in LIGHT_BLOCKS else hf)
+                alpha = 230 if name in LIGHT_BLOCKS else 68
                 if name in ("deepslate_bricks", "deepslate_tiles", "stone_bricks"):
-                    alpha = 96
-                if name in ("oxidized_copper", "weathered_copper"):
-                    alpha = 110
+                    alpha = 95
                 x0 = ox + (x - min_x) * scale
                 y0 = oy + (z - min_z) * scale
                 draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=(color[0], color[1], color[2], alpha))
+    save_fitted(img, out_path, canvas, 0.92)
 
-    img.convert("RGB").save(out_path)
+
+def draw_interior_top(
+    blocks: list[int],
+    palette: list[str],
+    size: list[int],
+    out_path: str,
+    walk_y: int,
+    canvas: tuple[int, int],
+) -> None:
+    sx, sy, sz = size
+    cx, cz = sx // 2, sz // 2
+    min_x, max_x = cx - 34, cx + 34
+    min_z, max_z = cz - 34, cz + 34
+    min_y, max_y = walk_y, walk_y + 8
+    w = max_x - min_x + 1
+    h = max_z - min_z + 1
+    scale = min((canvas[0] - 70) / w, (canvas[1] - 70) / h)
+    ox = (canvas[0] - w * scale) / 2
+    oy = (canvas[1] - h * scale) / 2
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    for y in range(min_y, max_y + 1):
+        hf = 0.75 + 0.25 * ((y - min_y) / max(1, max_y - min_y))
+        for z in range(min_z, max_z + 1):
+            for x in range(min_x, max_x + 1):
+                if not (0 <= x < sx and 0 <= y < sy and 0 <= z < sz):
+                    continue
+                v = blocks[idx(x, y, z, sx, sy, sz)]
+                if v <= 0:
+                    continue
+                name = palette[v]
+                color = shade(COLORS.get(name, (210, 210, 210, 255)), 1.15 if name in LIGHT_BLOCKS else hf)
+                alpha = 240 if name in LIGHT_BLOCKS else 150
+                if y == min_y:
+                    alpha = 230
+                x0 = ox + (x - min_x) * scale
+                y0 = oy + (z - min_z) * scale
+                draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=(color[0], color[1], color[2], alpha))
+    save_fitted(img, out_path, canvas, 0.94)
 
 
 def main() -> None:
@@ -245,10 +299,16 @@ def main() -> None:
     points = list(iter_non_air(blocks, palette, size))
     if not points:
         raise SystemExit("No non-air blocks to render")
-    draw_iso(points, os.path.join(out_dir, "iso.png"), (1300, 1050))
-    draw_elevation(blocks, palette, size, os.path.join(out_dir, "front.png"), "front", (920, 980))
-    draw_elevation(blocks, palette, size, os.path.join(out_dir, "side.png"), "side", (920, 980))
-    draw_top(blocks, palette, size, os.path.join(out_dir, "top.png"), (920, 920))
+    draw_iso_voxels(points, os.path.join(out_dir, "iso.png"), (1500, 1200), fill=0.88, max_scale=8.0)
+    draw_iso_voxels(points, os.path.join(out_dir, "iso_close.png"), (1500, 1200), fill=0.94, max_scale=10.0)
+    draw_iso_voxels(points, os.path.join(out_dir, "cutaway.png"), (1500, 1200), cutaway=True, fill=0.88, max_scale=8.0)
+    draw_iso_voxels(points, os.path.join(out_dir, "cutaway_close.png"), (1500, 1200), cutaway=True, fill=0.94, max_scale=10.0)
+    draw_elevation(blocks, palette, size, os.path.join(out_dir, "front.png"), "front", (1050, 1150))
+    draw_elevation(blocks, palette, size, os.path.join(out_dir, "side.png"), "side", (1050, 1150))
+    draw_top(blocks, palette, size, os.path.join(out_dir, "top.png"), (1050, 1050))
+    draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_lower_top.png"), 45, (1000, 1000))
+    draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_middle_top.png"), 73, (1000, 1000))
+    draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_upper_top.png"), 101, (1000, 1000))
     print(f"Wrote previews to {out_dir}")
 
 
