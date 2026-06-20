@@ -21,12 +21,26 @@ Outputs:
 - `out/previews/iso_close.png`
 - `out/previews/front.png`
 - `out/previews/side.png`
+- `out/previews/side_full.png`
 - `out/previews/top.png`
+- `out/previews/top_view.png`
 - `out/previews/cutaway.png`
 - `out/previews/cutaway_close.png`
+- `out/previews/roof_close.png`
+- `out/previews/interior_middle_cutaway.png`
+- `out/previews/interior_lower_cutaway.png`
+- `out/previews/lantern_debug_view.png`
 - `out/previews/interior_lower_top.png`
 - `out/previews/interior_middle_top.png`
 - `out/previews/interior_upper_top.png`
+- `out/previews/debug_spiral_deck.png`
+- `out/previews/debug_docking.png`
+- `out/previews/debug_cleanup_removed.png`
+- `out/previews/roof_cutaway.png`
+- `out/previews/side_bottom_close.png`
+- `out/previews/cutaway_bottom.png`
+- `out/previews/top_view_lower_spiral.png`
+- `out/previews/debug_lower_taper_only.png`
 
 ## Structure Notes
 
@@ -51,7 +65,7 @@ Run `python scripts\test_coordinate_order.py` to generate and verify `out/coordi
 
 ## Preview
 
-The bundled preview renderer is a lightweight Pillow voxel renderer. It does not use Minecraft textures, but it color-codes bookshelves, stone, wood, copper, glowing blocks, and glass crystals so the silhouette can be checked quickly. The `cutaway.png` and `cutaway_close.png` views hide part of the front wall so the atrium and central crystal core are easier to inspect. The `interior_*_top.png` images show each library level from `walk_y` through `walk_y + 8`, making the atrium, ring corridor, docking entry, stairs, and bookshelf zones easier to audit.
+The bundled preview renderer is a lightweight Pillow voxel renderer. It does not use Minecraft textures, but it color-codes bookshelves, stone, wood, copper, glowing blocks, and glass crystals so the silhouette can be checked quickly. The `cutaway.png` and `cutaway_close.png` views hide part of the front wall so the atrium and central crystal core are easier to inspect. The `interior_*_top.png` images show each library level from `walk_y` through `walk_y + 8`, making the atrium, ring corridor, docking entry, stairs, and bookshelf zones easier to audit. The generator also writes `debug_spiral_deck.png`, `debug_docking.png`, `debug_cleanup_removed.png`, `roof_cutaway.png`, and `debug_lower_taper_only.png` from its placement tags to verify walkway continuity, docking alignment, cleanup removals, the roof cavity, and the lower taper into the bottom crystal root. The renderer writes `side_bottom_close.png`, `cutaway_bottom.png`, and `top_view_lower_spiral.png` for bottom taper inspection.
 
 You can also inspect `out/inverted_library.mcstructure` with MCStructure Preview for a more specialized external preview workflow.
 

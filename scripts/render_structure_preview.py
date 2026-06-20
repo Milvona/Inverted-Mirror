@@ -251,6 +251,105 @@ def draw_top(blocks: list[int], palette: list[str], size: list[int], out_path: s
     save_fitted(img, out_path, canvas, 0.92)
 
 
+def draw_top_filtered(
+    points: list[tuple[int, int, int, str]],
+    out_path: str,
+    canvas: tuple[int, int],
+    y_min: int,
+    y_max: int,
+) -> None:
+    pts = [p for p in points if y_min <= p[1] <= y_max]
+    if not pts:
+        return
+    min_x, max_x, min_y, max_y, min_z, max_z = bounds(pts)
+    w = max_x - min_x + 1
+    h = max_z - min_z + 1
+    scale = min((canvas[0] - 70) / w, (canvas[1] - 70) / h, 9.0)
+    ox = (canvas[0] - w * scale) / 2
+    oy = (canvas[1] - h * scale) / 2
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    for x, y, z, name in sorted(pts, key=lambda p: p[1]):
+        hf = 0.58 + 0.42 * ((y - y_min) / max(1, y_max - y_min))
+        color = shade(COLORS.get(name, (210, 210, 210, 255)), 1.18 if name in LIGHT_BLOCKS else hf)
+        alpha = 230 if name in LIGHT_BLOCKS else 110
+        if name in ("deepslate_bricks", "deepslate_tiles", "stone_bricks"):
+            alpha = 160
+        x0 = ox + (x - min_x) * scale
+        y0 = oy + (z - min_z) * scale
+        draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=(color[0], color[1], color[2], alpha))
+    save_fitted(img, out_path, canvas, 0.93)
+
+
+def draw_side_filtered(
+    blocks: list[int],
+    palette: list[str],
+    size: list[int],
+    out_path: str,
+    canvas: tuple[int, int],
+    y_min: int,
+    y_max: int,
+) -> None:
+    sx, sy, sz = size
+    pts = [p for p in iter_non_air(blocks, palette, size) if y_min <= p[1] <= y_max]
+    if not pts:
+        return
+    min_x, max_x, _min_y, _max_y, min_z, max_z = bounds(pts)
+    w = max_z - min_z + 1
+    h = y_max - y_min + 1
+    scale = min((canvas[0] - 60) / w, (canvas[1] - 60) / h, 11.0)
+    ox = (canvas[0] - w * scale) / 2
+    oy = canvas[1] - 30
+    img = Image.new("RGBA", canvas, BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    for y in range(y_min, y_max + 1):
+        for z in range(min_z, max_z + 1):
+            chosen = 0
+            depth = 0.8
+            for x in range(min_x, max_x + 1):
+                v = blocks[idx(x, y, z, sx, sy, sz)]
+                if v > 0:
+                    chosen = v
+                    depth = 0.68 + 0.32 * ((max_x - x) / max(1, max_x - min_x))
+                    break
+            if chosen:
+                name = palette[chosen]
+                factor = 1.15 if name in LIGHT_BLOCKS else depth
+                color = shade(COLORS.get(name, (210, 210, 210, 255)), factor)
+                x0 = ox + (z - min_z) * scale
+                y0 = oy - (y - y_min + 1) * scale
+                draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=color)
+    save_fitted(img, out_path, canvas, 0.94)
+
+
+def draw_iso_filtered(
+    points: list[tuple[int, int, int, str]],
+    out_path: str,
+    canvas: tuple[int, int],
+    y_min: int,
+    y_max: int,
+    cutaway: bool = False,
+) -> None:
+    pts = [p for p in points if y_min <= p[1] <= y_max]
+    if pts:
+        draw_iso_voxels(pts, out_path, canvas, cutaway=cutaway, fill=0.94, max_scale=12.0)
+
+
+def draw_lantern_debug(points: list[tuple[int, int, int, str]], out_path: str, canvas: tuple[int, int]) -> None:
+    lantern_names = {
+        "pink_stained_glass",
+        "lime_stained_glass",
+        "yellow_stained_glass",
+        "cyan_stained_glass",
+        "white_stained_glass",
+        "iron_bars",
+        "dark_oak_log",
+    }
+    pts = [p for p in points if p[3] in lantern_names and (p[0] < 30 or p[0] > 98 or p[2] < 30 or p[2] > 98)]
+    if pts:
+        draw_iso_voxels(pts, out_path, canvas, fill=0.94, max_scale=13.0)
+
+
 def draw_interior_top(
     blocks: list[int],
     palette: list[str],
@@ -305,7 +404,17 @@ def main() -> None:
     draw_iso_voxels(points, os.path.join(out_dir, "cutaway_close.png"), (1500, 1200), cutaway=True, fill=0.94, max_scale=10.0)
     draw_elevation(blocks, palette, size, os.path.join(out_dir, "front.png"), "front", (1050, 1150))
     draw_elevation(blocks, palette, size, os.path.join(out_dir, "side.png"), "side", (1050, 1150))
+    draw_elevation(blocks, palette, size, os.path.join(out_dir, "side_full.png"), "side", (1200, 1300))
     draw_top(blocks, palette, size, os.path.join(out_dir, "top.png"), (1050, 1050))
+    draw_top(blocks, palette, size, os.path.join(out_dir, "top_view.png"), (1200, 1200))
+    draw_iso_filtered(points, os.path.join(out_dir, "roof_close.png"), (1100, 900), 96, 158, cutaway=True)
+    draw_iso_filtered(points, os.path.join(out_dir, "interior_middle_cutaway.png"), (1200, 900), 70, 88, cutaway=True)
+    draw_iso_filtered(points, os.path.join(out_dir, "interior_lower_cutaway.png"), (1200, 900), 42, 58, cutaway=True)
+    draw_lantern_debug(points, os.path.join(out_dir, "lantern_debug_view.png"), (1100, 900))
+    draw_side_filtered(blocks, palette, size, os.path.join(out_dir, "side_bottom_close.png"), (1100, 900), 0, 62)
+    bottom_points = [p for p in points if p[1] <= 68]
+    draw_iso_voxels(bottom_points, os.path.join(out_dir, "cutaway_bottom.png"), (1200, 900), cutaway=True, fill=0.94, max_scale=12.0)
+    draw_top_filtered(points, os.path.join(out_dir, "top_view_lower_spiral.png"), (1050, 1050), 25, 56)
     draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_lower_top.png"), 45, (1000, 1000))
     draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_middle_top.png"), 73, (1000, 1000))
     draw_interior_top(blocks, palette, size, os.path.join(out_dir, "interior_upper_top.png"), 101, (1000, 1000))

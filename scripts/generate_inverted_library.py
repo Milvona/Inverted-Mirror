@@ -5,6 +5,8 @@ import os
 from collections import Counter
 from dataclasses import dataclass, field
 
+from PIL import Image, ImageDraw
+
 from bedrock_nbt import NbtCompound, NbtInt, NbtList, TAG_COMPOUND, TAG_INT, TAG_LIST, write_root_compound
 from coordinate_order import mc_index
 
@@ -145,6 +147,8 @@ class Structure:
     stats: Counter = field(default_factory=Counter)
     bridge_reports: list[dict[str, object]] = field(default_factory=list)
     deck_mask: set[tuple[int, int, int]] = field(default_factory=set)
+    lower_taper_mask: set[tuple[int, int, int]] = field(default_factory=set)
+    bottom_root_mask: set[tuple[int, int, int]] = field(default_factory=set)
     curb_mask: set[tuple[int, int, int]] = field(default_factory=set)
     support_mask: set[tuple[int, int, int]] = field(default_factory=set)
     bridge_mask: set[tuple[int, int, int]] = field(default_factory=set)
@@ -152,9 +156,14 @@ class Structure:
     main_ring_masks: dict[str, set[tuple[int, int, int]]] = field(default_factory=dict)
     stair_masks: dict[str, set[tuple[int, int, int]]] = field(default_factory=dict)
     protected_mask: set[tuple[int, int, int]] = field(default_factory=set)
+    removed_debug: list[tuple[int, int, int, str]] = field(default_factory=list)
     detached_edge_blocks_removed: int = 0
+    detached_noise_removed: int = 0
+    detached_lantern_parts_removed: int = 0
     floating_support_blocks_removed: int = 0
     removed_internal_clutter_count: int = 0
+    repaired_walkway_blocks: int = 0
+    repaired_bridge_blocks: int = 0
 
     def set(self, x: int, y: int, z: int, block: str, category: str = "general") -> bool:
         if not in_bounds(x, y, z):
@@ -171,6 +180,8 @@ class Structure:
         self.categories[i] = category
         if new != 0:
             self.stats[category] += 1
+            if category in PROTECTED_TAGS:
+                self.protect(x, y, z)
         return True
 
     def carve(self, x: int, y: int, z: int) -> bool:
@@ -180,6 +191,14 @@ class Structure:
 
     def force_carve(self, x: int, y: int, z: int) -> bool:
         return self.set(x, y, z, "air", "air")
+
+    def remove_tagged(self, x: int, y: int, z: int, reason: str) -> bool:
+        if (x, y, z) in self.protected_mask:
+            return False
+        if not self.is_solid(x, y, z):
+            return False
+        self.removed_debug.append((x, y, z, reason))
+        return self.carve(x, y, z)
 
     def is_solid(self, x: int, y: int, z: int) -> bool:
         return in_bounds(x, y, z) and self.blocks[index(x, y, z)] != PALETTE["air"]
@@ -195,6 +214,18 @@ class Structure:
     def protect(self, x: int, y: int, z: int) -> None:
         if in_bounds(x, y, z):
             self.protected_mask.add((x, y, z))
+
+
+PROTECTED_TAGS = {
+    "spiral_deck",
+    "bridge_deck",
+    "landing_pad",
+    "doorway_frame",
+    "main_ring_corridor",
+    "stair",
+    "atrium_rim",
+    "central_crystal_core",
+}
 
 
 def build_palette() -> NbtList:
@@ -333,7 +364,7 @@ def build_open_library_tier(s: Structure, level_y: int, floor_radius: int, heigh
 
 
 def build_central_library_core(s: Structure) -> None:
-    for y, radius, height in ((44, 24, 22), (72, 23, 22), (100, 21, 16)):
+    for y, radius, height in ((44, 22, 22), (72, 25, 22), (100, 20, 16)):
         build_open_library_tier(s, y, radius, height)
     for angle in range(0, 360, 45):
         rad = math.radians(angle)
@@ -441,12 +472,12 @@ def carve_openings(s: Structure, docking_points: list[DockingPoint]) -> None:
             for y in range(dock.walk_y, dock.walk_y + dock.opening_height + 1):
                 x = round(dock.doorway_center_x + tx * side)
                 z = round(dock.doorway_center_z + tz * side)
-                s.set(x, y, z, "deepslate_bricks", "main_pillar")
+                s.set(x, y, z, "deepslate_bricks", "doorway_frame")
                 s.protect(x, y, z)
         for w in range(-half - 1, half + 2):
             x = round(dock.doorway_center_x + tx * w)
             z = round(dock.doorway_center_z + tz * w)
-            s.set(x, dock.walk_y + dock.opening_height + 1, z, "dark_oak_log", "ring_beam")
+            s.set(x, dock.walk_y + dock.opening_height + 1, z, "dark_oak_log", "doorway_frame")
             s.protect(x, dock.walk_y + dock.opening_height + 1, z)
 
 
@@ -479,12 +510,14 @@ def clear_internal_volume(s: Structure) -> None:
 
 def build_floor_slabs(s: Structure) -> None:
     for level in LEVELS:
+        slab_radius = {"lower": 22, "middle": 25, "upper": 20}[str(level["name"])]
+        rim_radius = slab_radius - 2
         for y in range(level["floor_slab_min_y"], level["floor_slab_max_y"] + 1):
-            for z in range(CZ - 25, CZ + 26):
-                for x in range(CX - 25, CX + 26):
-                    if is_inside_octagon(x, z, CX, CZ, 24) and get_radial_distance(x, z) >= 6:
+            for z in range(CZ - slab_radius - 1, CZ + slab_radius + 2):
+                for x in range(CX - slab_radius - 1, CX + slab_radius + 2):
+                    if is_inside_octagon(x, z, CX, CZ, slab_radius) and get_radial_distance(x, z) >= 6:
                         r = get_radial_distance(x, z)
-                        block = "deepslate_bricks" if r >= 22 or y < level["floor_slab_max_y"] else floor_block(x, z)
+                        block = "deepslate_bricks" if r >= rim_radius or y < level["floor_slab_max_y"] else floor_block(x, z)
                         s.set(x, y, z, block, "library_core")
 
 
@@ -497,7 +530,6 @@ def build_regular_atrium(s: Structure) -> None:
                 elif is_inside_octagon(x, z, CX, CZ, 7):
                     if y in (45, 73, 101):
                         s.set(x, y, z, "deepslate_bricks", "atrium_rim")
-                        s.protect(x, y, z)
     for level in LEVELS:
         y = level["walk_y"]
         for dx, dz in ((0, -8), (0, 8), (8, 0), (-8, 0)):
@@ -510,7 +542,6 @@ def build_regular_atrium(s: Structure) -> None:
                     else:
                         x = CX + dx + b * (1 if dx > 0 else -1)
                     s.set(x, y, z, "deepslate_tiles", "atrium_rim")
-                    s.protect(x, y, z)
 
 
 def build_main_ring_corridor(s: Structure) -> None:
@@ -522,11 +553,9 @@ def build_main_ring_corridor(s: Structure) -> None:
                 r = get_radial_distance(x, z)
                 if 8 <= r <= 13 and is_inside_octagon(x, z, CX, CZ, 15):
                     block = "deepslate_tiles" if int(r) in (8, 13) else floor_block(x, z)
-                    s.set(x, y, z, block, "main_ring")
-                    s.set(x, y - 1, z, "deepslate_bricks", "main_ring")
+                    s.set(x, y, z, block, "main_ring_corridor")
+                    s.set(x, y - 1, z, "deepslate_bricks", "main_ring_corridor")
                     mask.add((x, y, z))
-                    s.protect(x, y, z)
-                    s.protect(x, y - 1, z)
                     for clear_y in range(y + 1, y + 4):
                         s.carve(x, clear_y, z)
         s.main_ring_masks[str(level["name"])] = mask
@@ -548,8 +577,6 @@ def connect_landing_to_ring_corridor(s: Structure, docking_points: list[DockingP
                 s.set(x, y, z, "stone_bricks", "landing_pad")
                 s.set(x, y - 1, z, "deepslate_bricks", "landing_pad")
                 s.landing_pad_mask.add((x, y, z))
-                s.protect(x, y, z)
-                s.protect(x, y - 1, z)
                 for clear_y in range(y + 1, y + 4):
                     s.carve(x, clear_y, z)
 
@@ -577,6 +604,114 @@ def build_main_pillars_and_beams(s: Structure, docking_points: list[DockingPoint
                             s.protect(x, y, z)
 
 
+def strengthen_vertical_continuity(s: Structure, docking_points: list[DockingPoint]) -> None:
+    dock_angles = [get_polar_angle(d.doorway_center_x, d.doorway_center_z) for d in docking_points]
+    for angle in range(0, 360, 45):
+        if any(angle_delta(angle, da) < 10 for da in dock_angles):
+            continue
+        rad = math.radians(angle)
+        radius = 22 if angle % 90 == 0 else 21
+        column_half = 1 if angle % 90 == 0 else 0
+        cx = round(CX + math.cos(rad) * radius)
+        cz = round(CZ + math.sin(rad) * radius)
+        for y in range(42, 121):
+            for dz in range(-column_half, column_half + 1):
+                for dx in range(-column_half, column_half + 1):
+                    if column_half and abs(dx) + abs(dz) > 1:
+                        continue
+                    block = "deepslate_bricks" if y % 7 in (0, 1, 2, 3) else "dark_oak_log"
+                    s.set(cx + dx, y, cz + dz, block, "main_pillar")
+                    s.protect(cx + dx, y, cz + dz)
+    for y in (44, 50, 68, 72, 78, 96, 100, 106):
+        for z in range(CZ - 25, CZ + 26):
+            for x in range(CX - 25, CX + 26):
+                r = oct_metric(x - CX, z - CZ)
+                if 22.0 <= r <= 24.5 and is_inside_octagon(x, z, CX, CZ, 25):
+                    block = "deepslate_bricks" if y in (44, 72, 100, 106) else "dark_oak_log"
+                    if (x + z + y) % 4 != 0:
+                        s.set(x, y, z, block, "ring_beam")
+                        s.protect(x, y, z)
+
+
+MEZZANINE_MASKS: dict[str, set[tuple[int, int, int]]] = {}
+
+
+def angle_in_sector(angle: float, sector: tuple[float, float]) -> bool:
+    a0, a1 = sector
+    if a0 <= a1:
+        return a0 <= angle <= a1
+    return angle >= a0 or angle <= a1
+
+
+def build_mezzanine_platforms(s: Structure, docking_points: list[DockingPoint]) -> None:
+    configs = [
+        ("lower", 50, [(145, 205), (255, 325), (10, 55)], 4),
+        ("middle", 78, [(20, 75), (115, 165), (200, 250), (295, 340)], 6),
+    ]
+    dock_angles = [get_polar_angle(d.doorway_center_x, d.doorway_center_z) for d in docking_points]
+    for name, y, sectors, shelf_height in configs:
+        mask: set[tuple[int, int, int]] = set()
+        for z in range(CZ - 24, CZ + 25):
+            for x in range(CX - 24, CX + 25):
+                r = get_radial_distance(x, z)
+                a = get_polar_angle(x, z)
+                if not (15 <= r <= 22 and is_inside_octagon(x, z, CX, CZ, 24)):
+                    continue
+                if any(angle_delta(a, da) < 18 for da in dock_angles):
+                    continue
+                if not any(angle_in_sector(a, sector) for sector in sectors):
+                    continue
+                rim = r >= 21 or r <= 15.8
+                s.set(x, y, z, "deepslate_tiles" if rim else floor_block(x, z), "mezzanine_floor")
+                s.set(x, y - 1, z, "dark_oak_planks", "mezzanine_floor")
+                mask.add((x, y, z))
+                for clear_y in range(y + 1, y + 4):
+                    s.carve(x, clear_y, z)
+                if 18 <= r <= 22 and int(a) % 9 not in (0, 1, 2):
+                    for yy in range(y + 1, y + shelf_height + 1):
+                        if yy % 4 == 0 or int(a) % 21 == 0:
+                            s.set(x, yy, z, "dark_oak_log", "mezzanine_bookshelf")
+                        else:
+                            s.set(x, yy, z, "bookshelf", "mezzanine_bookshelf")
+        MEZZANINE_MASKS[name] = mask
+
+
+def build_short_mezzanine_stair(
+    s: Structure,
+    key: str,
+    base_y: int,
+    top_y: int,
+    start: tuple[int, int],
+    direction: tuple[int, int],
+) -> None:
+    sx, sz = start
+    dx, dz = direction
+    perp = (-dz, dx)
+    mask = s.stair_masks.setdefault(key, set())
+    steps = top_y - base_y
+    for i in range(steps + 1):
+        y = base_y + i
+        cx = sx + dx * (i + 1)
+        cz = sz + dz * (i + 1)
+        for w in range(-1, 2):
+            x = cx + perp[0] * w
+            z = cz + perp[1] * w
+            s.set(x, y, z, "stone_bricks" if w == 0 else "deepslate_tiles", "stair")
+            s.set(x, y - 1, z, "deepslate_bricks", "stair")
+            mask.add((x, y, z))
+            s.protect(x, y, z)
+            s.protect(x, y - 1, z)
+            for clear_y in range(y + 1, y + 4):
+                s.carve(x, clear_y, z)
+
+
+def build_mezzanine_stairs(s: Structure) -> None:
+    build_short_mezzanine_stair(s, "lower_mezzanine_A", 45, 50, (52, 60), (-1, 0))
+    build_short_mezzanine_stair(s, "lower_mezzanine_B", 45, 50, (76, 69), (1, 0))
+    build_short_mezzanine_stair(s, "middle_mezzanine_A", 73, 78, (54, 55), (-1, 0))
+    build_short_mezzanine_stair(s, "middle_mezzanine_B", 73, 78, (74, 74), (1, 0))
+
+
 def build_curved_block_stair(
     s: Structure,
     key: str,
@@ -598,8 +733,8 @@ def build_curved_block_stair(
         for w in range(-1, 2):
             x = round(cx + tangent[0] * w)
             z = round(cz + tangent[1] * w)
-            s.set(x, y, z, "deepslate_tiles" if w else "stone_bricks", "stairs")
-            s.set(x, y - 1, z, "deepslate_bricks", "stairs")
+            s.set(x, y, z, "deepslate_tiles" if w else "stone_bricks", "stair")
+            s.set(x, y - 1, z, "deepslate_bricks", "stair")
             mask.add((x, y, z))
             s.protect(x, y, z)
             s.protect(x, y - 1, z)
@@ -667,7 +802,46 @@ def place_low_atrium_shelves(s: Structure) -> None:
             s.set(x, y + 1, z, "dark_oak_planks", "low_shelf")
 
 
-def cleanup_internal_clutter(s: Structure) -> None:
+def enhance_library_readability(s: Structure, docking_points: list[DockingPoint]) -> None:
+    dock_angles = [get_polar_angle(d.doorway_center_x, d.doorway_center_z) for d in docking_points]
+    configs = [
+        ("lower", 45, 4, (18, 21), (120, 170, 205, 250, 300, 340)),
+        ("middle", 73, 7, (17, 23), (25, 70, 115, 160, 205, 250, 295, 340)),
+    ]
+    for name, walk_y, height, r_range, angles in configs:
+        for angle in angles:
+            if any(angle_delta(angle, da) < 18 for da in dock_angles):
+                continue
+            rad = math.radians(angle)
+            normal = (math.cos(rad), math.sin(rad))
+            tangent = (-math.sin(rad), math.cos(rad))
+            for w in range(-4, 5):
+                for depth in range(0, 2):
+                    r = r_range[1] - depth
+                    x = round(CX + normal[0] * r + tangent[0] * w)
+                    z = round(CZ + normal[1] * r + tangent[1] * w)
+                    if get_radial_distance(x, z) < 15:
+                        continue
+                    for y in range(walk_y + 1, walk_y + height + 1):
+                        frame = abs(w) == 4 or y in (walk_y + 1, walk_y + height) or w == 0 and y % 3 == 0
+                        block = "dark_oak_log" if frame else "bookshelf"
+                        s.set(x, y, z, block, "bookshelf_zone")
+    # Small paired reading counters near the ring, low enough to keep the crystal visible.
+    for walk_y, angles in ((45, (150, 210, 320)), (73, (35, 145, 215, 325))):
+        for angle in angles:
+            rad = math.radians(angle)
+            tangent = (-math.sin(rad), math.cos(rad))
+            bx = round(CX + math.cos(rad) * 12)
+            bz = round(CZ + math.sin(rad) * 12)
+            for w in range(-2, 3):
+                x = round(bx + tangent[0] * w)
+                z = round(bz + tangent[1] * w)
+                s.set(x, walk_y + 1, z, "bookshelf", "low_shelf")
+                if w in (-2, 2):
+                    s.set(x, walk_y + 2, z, "dark_oak_planks", "low_shelf")
+
+
+def cleanup_internal_clutter(s: Structure, docking_points: list[DockingPoint] | None = None) -> None:
     removed = 0
     for level in LEVELS:
         y = level["walk_y"]
@@ -677,13 +851,32 @@ def cleanup_internal_clutter(s: Structure) -> None:
                 if 8 <= r <= 13:
                     for yy in range(y + 1, y + 4):
                         if (x, yy, z) not in s.protected_mask and s.is_solid(x, yy, z):
+                            s.removed_debug.append((x, yy, z, "internal"))
                             s.carve(x, yy, z)
                             removed += 1
         for z in range(CZ - 7, CZ + 8):
             for x in range(CX - 7, CX + 8):
                 if is_inside_octagon(x, z, CX, CZ, 6):
                     for yy in range(level["room_min_y"], level["room_max_y"] + 1):
-                        if (x, yy, z) not in s.protected_mask and s.is_solid(x, yy, z):
+                        cat = s.categories[index(x, yy, z)] if in_bounds(x, yy, z) else "air"
+                        if (x, yy, z) not in s.protected_mask and s.is_solid(x, yy, z) and cat != "central_crystal_core":
+                            s.removed_debug.append((x, yy, z, "internal"))
+                            s.carve(x, yy, z)
+                            removed += 1
+    if docking_points:
+        for dock in docking_points:
+            fx, fz = dock.facing_vector
+            tx, tz = dock.tangent_vector
+            flen = max(1.0, math.hypot(fx, fz))
+            back_x, back_z = -fx / flen, -fz / flen
+            half = dock.opening_width // 2
+            for depth in range(-1, 6):
+                for w in range(-half, half + 1):
+                    x = round(dock.doorway_center_x + tx * w + back_x * depth)
+                    z = round(dock.doorway_center_z + tz * w + back_z * depth)
+                    for yy in range(dock.walk_y + 1, dock.walk_y + dock.opening_height):
+                        if s.is_solid(x, yy, z) and (x, yy, z) not in s.protected_mask:
+                            s.removed_debug.append((x, yy, z, "doorway"))
                             s.carve(x, yy, z)
                             removed += 1
     s.removed_internal_clutter_count = removed
@@ -703,8 +896,36 @@ def rebuild_internal_system(s: Structure, docking_points: list[DockingPoint]) ->
     place_outer_bookshelf_walls(s, docking_points)
     place_quadrant_bookshelves(s)
     place_low_atrium_shelves(s)
+    build_mezzanine_platforms(s, docking_points)
+    build_mezzanine_stairs(s)
+    enhance_library_readability(s, docking_points)
+    strengthen_vertical_continuity(s, docking_points)
     carve_openings(s, docking_points)
-    cleanup_internal_clutter(s)
+    cleanup_internal_clutter(s, docking_points)
+
+
+def soften_lower_outer_platform(s: Structure, docking_points: list[DockingPoint]) -> None:
+    dock_angles = [get_polar_angle(d.doorway_center_x, d.doorway_center_z) for d in docking_points if d.walk_y == 45]
+    for y in range(42, 45):
+        for z in range(CZ - 27, CZ + 28):
+            for x in range(CX - 27, CX + 28):
+                if not in_bounds(x, y, z):
+                    continue
+                r = get_radial_distance(x, z)
+                if r < 20 or r > 26:
+                    continue
+                cat = s.categories[index(x, y, z)]
+                if cat not in {"library_core", "ring_beam"}:
+                    continue
+                a = get_polar_angle(x, z)
+                near_dock = any(angle_delta(a, da) < 26 for da in dock_angles)
+                near_column = any(angle_delta(a, p) < 5 for p in range(0, 360, 45))
+                if near_dock or near_column:
+                    continue
+                # Leave alternating stone teeth instead of a continuous visual disk.
+                if (int(a // 9) + int(r) + y) % 3 != 0:
+                    s.removed_debug.append((x, y, z, "lower_platform_soften"))
+                    s.carve(x, y, z)
 
 
 def carve_front_cut_visibility(s: Structure) -> None:
@@ -716,43 +937,77 @@ def carve_front_cut_visibility(s: Structure) -> None:
                     s.carve(x, yy, z)
 
 
+LOWER_TAPER_END = 0.30
+UPPER_TAPER_START = 0.82
+BOTTOM_APEX_ROOT_Y = 38
+BOTTOM_APEX_ROOT_RADIUS = 7
+
+
+def smoothstep(u: float) -> float:
+    u = max(0.0, min(1.0, u))
+    return u * u * (3.0 - 2.0 * u)
+
+
 def walkway_point(t: float) -> tuple[float, float, int, float]:
-    theta = 5 * math.pi * t - math.pi * 0.58
-    base_radius = 42.0
-    radius = base_radius + 3.2 * math.sin(theta * 0.8) + 1.4 * math.sin(theta * 2.0) + 1.6 * t
-    for floor_t in ((44 - 34) / 70, (72 - 34) / 70, (100 - 34) / 70):
-        closeness = max(0.0, 1.0 - abs(t - floor_t) / 0.055)
-        radius -= 4.5 * closeness
-    y = round(34 + 70 * t)
+    if t < LOWER_TAPER_END:
+        u = smoothstep(t / LOWER_TAPER_END)
+        theta0 = -math.pi * 1.62
+        theta = theta0 + math.pi * 1.82 * u
+        radius = 9.5 + (40.5 - 9.5) * (u ** 0.9)
+        radius += 0.7 * math.sin(theta * 1.7) * u
+        y = round(BOTTOM_APEX_ROOT_Y + (49 - BOTTOM_APEX_ROOT_Y) * u)
+        return theta, radius, y, t
+
+    if t <= UPPER_TAPER_START:
+        u = (t - LOWER_TAPER_END) / (UPPER_TAPER_START - LOWER_TAPER_END)
+        theta0 = -math.pi * 1.62 + math.pi * 1.82
+        theta = theta0 + math.pi * 3.45 * u
+        radius = 41.5 + 3.0 * math.sin(theta * 0.8) + 1.3 * math.sin(theta * 2.0) + 1.2 * u
+        y = round(52 + (92 - 52) * u)
+        return theta, radius, y, t
+
+    u = smoothstep((t - UPPER_TAPER_START) / (1.0 - UPPER_TAPER_START))
+    theta0 = -math.pi * 1.62 + math.pi * 1.82 + math.pi * 3.45
+    theta = theta0 + math.pi * 1.07 * u
+    radius = 42.0 - 17.0 * (u ** 1.2) + 0.8 * math.sin(theta * 1.3)
+    y = round(92 + (104 - 92) * u)
     return theta, radius, y, t
+
+
+def walkway_width_at(t: float) -> float:
+    if t < LOWER_TAPER_END:
+        u = smoothstep(t / LOWER_TAPER_END)
+        return 2.0 + (4.0 - 2.0) * u
+    if t > UPPER_TAPER_START:
+        u = smoothstep((t - UPPER_TAPER_START) / (1.0 - UPPER_TAPER_START))
+        return 4.0 - 1.4 * u
+    return 4.0
 
 
 def build_spiral_walkway(s: Structure, turns: float = 2.5, y_start: int = 34, y_end: int = 104) -> list[tuple[float, float, int]]:
     points: list[tuple[float, float, int]] = []
     steps = 1650
-    width = 4.2
+    width = 4.0
     for step in range(steps + 1):
         t = step / steps
         theta, radius, y, _ = walkway_point(t)
+        local_width = walkway_width_at(t)
         px = CX + math.cos(theta) * radius
         pz = CZ + math.sin(theta) * radius
         radial = (math.cos(theta), math.sin(theta))
         tangent = (-math.sin(theta), math.cos(theta))
-        half_width = width / 2
-        for z in range(math.floor(pz - width), math.ceil(pz + width + 1)):
-            for x in range(math.floor(px - width), math.ceil(px + width + 1)):
+        half_width = local_width / 2
+        for z in range(math.floor(pz - local_width), math.ceil(pz + local_width + 1)):
+            for x in range(math.floor(px - local_width), math.ceil(px + local_width + 1)):
                 cross = (x - px) * radial[0] + (z - pz) * radial[1]
                 along = (x - px) * tangent[0] + (z - pz) * tangent[1]
                 if abs(cross) <= half_width and abs(along) <= 1.85:
-                    chip = abs(cross) > half_width - 0.55 and (step // 17 + x + z) % 9 == 0
-                    if chip:
-                        continue
                     edge = abs(cross) > half_width - 0.7
-                    s.set(x, y, z, "deepslate_bricks" if edge else "stone_bricks", "spiral_walkway")
-                    s.set(x, y - 1, z, "deepslate_tiles" if edge else "deepslate_bricks", "spiral_walkway")
+                    s.set(x, y, z, "deepslate_bricks" if edge else "stone_bricks", "spiral_deck")
+                    s.set(x, y - 1, z, "deepslate_tiles" if edge else "deepslate_bricks", "spiral_deck")
                     s.deck_mask.add((x, y, z))
-                    s.protect(x, y, z)
-                    s.protect(x, y - 1, z)
+                    if t < LOWER_TAPER_END:
+                        s.lower_taper_mask.add((x, y, z))
         if step % 18 == 0:
             points.append((theta, radius, y))
     return points
@@ -766,21 +1021,68 @@ def build_walkway_edges(s: Structure) -> None:
     edge_candidates: set[tuple[int, int, int]] = set()
     for x, y, z in s.deck_mask:
         for nx, ny, nz in neighbor4(x, y, z):
-            if (nx, ny, nz) not in s.deck_mask:
+            if (nx, ny, nz) not in s.deck_mask and (nx, ny, nz) not in s.bridge_mask:
                 edge_candidates.add((nx, y + 1, nz))
     for i, (x, y, z) in enumerate(sorted(edge_candidates)):
-        if (x * 17 + z * 31 + y) % 11 in (0, 1):
+        if (x * 17 + z * 31 + y) % 10 in (0, 1, 2):
             continue
-        if any(n in s.deck_mask for n in neighbor4(x, y - 1, z)):
-            s.set(x, y, z, "deepslate_bricks", "walkway_edge")
+        if any(n in s.deck_mask or n in s.bridge_mask for n in neighbor4(x, y - 1, z)):
+            s.set(x, y, z, "deepslate_bricks", "spiral_curb")
             s.curb_mask.add((x, y, z))
-    # Connected ribs and underside supports. They always touch the deck above.
+    # Connected ribs and underside supports. They always touch deck at the top.
     for i, (x, y, z) in enumerate(sorted(s.deck_mask)):
-        if i % 115 != 0:
+        is_lower = (x, y, z) in s.lower_taper_mask
+        spacing = 310 if is_lower else 155
+        if i % spacing != 0:
             continue
-        for yy in range(y - 4, y):
-            s.set(x, yy, z, "deepslate_bricks", "walkway_support")
+        support_len = (2 + ((x * 13 + z * 7 + y) % 3)) if is_lower else (3 + ((x * 13 + z * 7 + y) % 5))
+        for yy in range(y - support_len, y):
+            s.set(x, yy, z, "deepslate_bricks", "spiral_support")
             s.support_mask.add((x, yy, z))
+
+
+def build_bottom_taper_root(s: Structure) -> None:
+    y = BOTTOM_APEX_ROOT_Y
+    for yy, radius in ((y + 4, 12), (y + 2, 9), (y + 1, 8), (y, 7), (y - 1, 5)):
+        for z in range(CZ - radius - 1, CZ + radius + 2):
+            for x in range(CX - radius - 1, CX + radius + 2):
+                r = oct_metric(x - CX, z - CZ)
+                if radius - 2 <= r <= radius:
+                    block = "deepslate_tiles" if yy >= y else "deepslate_bricks"
+                    s.set(x, yy, z, block, "bottom_root")
+                    s.bottom_root_mask.add((x, yy, z))
+    for yy, radius in ((y + 3, 6), (y + 2, 5), (y + 1, 4)):
+        for z in range(CZ - radius, CZ + radius + 1):
+            for x in range(CX - radius, CX + radius + 1):
+                if oct_metric(x - CX, z - CZ) <= radius and oct_metric(x - CX, z - CZ) >= max(2, radius - 1):
+                    s.set(x, yy, z, "deepslate_bricks", "bottom_root")
+                    s.bottom_root_mask.add((x, yy, z))
+    # Narrow neck from lower taper start toward the crystal root.
+    theta, radius, start_y, _ = walkway_point(0.0)
+    sx = round(CX + math.cos(theta) * radius)
+    sz = round(CZ + math.sin(theta) * radius)
+    steps = max(abs(sx - CX), abs(sz - CZ), 1)
+    for i in range(steps + 1):
+        u = i / steps
+        x = round(sx + (CX - sx) * u)
+        z = round(sz + (CZ - sz) * u)
+        yy = round(start_y + (y - start_y) * u)
+        width = 1 if i < steps * 0.55 else 2
+        for dz in range(-width, width + 1):
+            for dx in range(-width, width + 1):
+                if abs(dx) + abs(dz) <= width:
+                    s.set(x + dx, yy, z + dz, "stone_bricks" if i < steps - 2 else "deepslate_tiles", "bottom_root")
+                    s.set(x + dx, yy - 1, z + dz, "deepslate_bricks", "bottom_root")
+                    s.bottom_root_mask.add((x + dx, yy, z + dz))
+                    s.lower_taper_mask.add((x + dx, yy, z + dz))
+                    s.deck_mask.add((x + dx, yy, z + dz))
+    # Small luminous socket where the blue pendant begins.
+    for yy in range(y - 2, y + 2):
+        for dz in range(-2, 3):
+            for dx in range(-2, 3):
+                if abs(dx) + abs(dz) <= 2:
+                    block = "sea_lantern" if yy == y - 1 and abs(dx) + abs(dz) <= 1 else "cyan_stained_glass"
+                    s.set(CX + dx, yy, CZ + dz, block, "bottom_crystal")
 
 
 def cleanup_detached_edge_blocks(s: Structure) -> None:
@@ -804,8 +1106,113 @@ def cleanup_detached_edge_blocks(s: Structure) -> None:
     s.floating_support_blocks_removed = removed_supports
 
 
+def tag_at(s: Structure, p: tuple[int, int, int]) -> str:
+    x, y, z = p
+    if not in_bounds(x, y, z):
+        return "air"
+    return s.categories[index(x, y, z)]
+
+
+def neighbors6(p: tuple[int, int, int]) -> list[tuple[int, int, int]]:
+    x, y, z = p
+    return [
+        (x + 1, y, z), (x - 1, y, z),
+        (x, y + 1, z), (x, y - 1, z),
+        (x, y, z + 1), (x, y, z - 1),
+    ]
+
+
+def neighbors18(p: tuple[int, int, int]) -> list[tuple[int, int, int]]:
+    x, y, z = p
+    out: list[tuple[int, int, int]] = []
+    for dy in (-1, 0, 1):
+        for dz in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == dy == dz == 0:
+                    continue
+                if abs(dx) + abs(dy) + abs(dz) <= 2:
+                    out.append((x + dx, y + dy, z + dz))
+    return out
+
+
+def near_any_tag(s: Structure, p: tuple[int, int, int], tags: set[str], use_18: bool = True) -> bool:
+    candidates = neighbors18(p) if use_18 else neighbors6(p)
+    return any(tag_at(s, n) in tags for n in candidates)
+
+
+def cleanup_detached_walkway_details(s: Structure) -> None:
+    attached_tags = {
+        "spiral_deck",
+        "spiral_curb",
+        "bridge_deck",
+        "landing_pad",
+        "library_core",
+        "roof",
+        "main_ring_corridor",
+    }
+    removed_curb = 0
+    for p in list(s.curb_mask):
+        if tag_at(s, p) != "spiral_curb":
+            s.curb_mask.discard(p)
+            continue
+        if not near_any_tag(s, p, {"spiral_deck", "bridge_deck"}, True):
+            if s.remove_tagged(*p, "curb"):
+                removed_curb += 1
+                s.curb_mask.discard(p)
+
+    removed_support = 0
+    for p in list(s.support_mask):
+        if tag_at(s, p) != "spiral_support":
+            s.support_mask.discard(p)
+            continue
+        x, y, z = p
+        top_connected = tag_at(s, (x, y + 1, z)) in {"spiral_deck", "spiral_curb", "spiral_support", "bridge_deck"}
+        side_connected = near_any_tag(s, p, {"spiral_deck", "spiral_curb", "spiral_support", "bridge_deck"}, False)
+        if not top_connected and not side_connected:
+            if s.remove_tagged(*p, "support"):
+                removed_support += 1
+                s.support_mask.discard(p)
+
+    removed_noise = 0
+    removed_lantern = 0
+    for i, cat in enumerate(list(s.categories)):
+        if cat not in {"decoration_noise", "lantern_branch", "lantern_chain", "lantern_body"}:
+            continue
+        x, y, z = coords_from_flat_index(i)
+        p = (x, y, z)
+        if cat == "decoration_noise":
+            keep = near_any_tag(s, p, attached_tags, True)
+            if not keep and s.remove_tagged(x, y, z, "noise"):
+                removed_noise += 1
+        elif cat == "lantern_branch":
+            keep = near_any_tag(s, p, {"spiral_deck", "spiral_curb", "bridge_deck", "lantern_branch", "lantern_chain"}, True)
+            if not keep and s.remove_tagged(x, y, z, "lantern"):
+                removed_lantern += 1
+        elif cat == "lantern_chain":
+            keep = tag_at(s, (x, y + 1, z)) in {"lantern_chain", "lantern_branch", "spiral_deck", "spiral_curb", "bridge_deck"} or near_any_tag(s, p, {"lantern_body"}, False)
+            if not keep and s.remove_tagged(x, y, z, "lantern"):
+                removed_lantern += 1
+        elif cat == "lantern_body":
+            keep = near_any_tag(s, p, {"lantern_body", "lantern_chain"}, True)
+            if not keep and s.remove_tagged(x, y, z, "lantern"):
+                removed_lantern += 1
+
+    s.detached_edge_blocks_removed += removed_curb
+    s.floating_support_blocks_removed += removed_support
+    s.detached_noise_removed = removed_noise
+    s.detached_lantern_parts_removed = removed_lantern
+
+
+def coords_from_flat_index(i: int) -> tuple[int, int, int]:
+    x = i // (SIZE_Z * SIZE_Y)
+    y = (i // SIZE_Z) % SIZE_Y
+    z = i % SIZE_Z
+    return x, y, z
+
+
 def cleanup_floating_blocks(s: Structure) -> None:
     cleanup_detached_edge_blocks(s)
+    cleanup_detached_walkway_details(s)
 
 
 def flood_count(mask: set[tuple[int, int, int]], start: tuple[int, int, int]) -> int:
@@ -864,11 +1271,9 @@ def add_deck_connection(s: Structure, a: tuple[int, int, int], b: tuple[int, int
             x, y, z = cx + dx, cy, cz
             if (x, y, z) not in s.deck_mask:
                 added += 1
-            s.set(x, y, z, "stone_bricks", "spiral_walkway")
-            s.set(x, y - 1, z, "deepslate_bricks", "spiral_walkway")
+            s.set(x, y, z, "stone_bricks", "spiral_deck")
+            s.set(x, y - 1, z, "deepslate_bricks", "spiral_deck")
             s.deck_mask.add((x, y, z))
-            s.protect(x, y, z)
-            s.protect(x, y - 1, z)
     return added
 
 
@@ -897,7 +1302,8 @@ def validate_connectivity(s: Structure, docking_points: list[DockingPoint]) -> N
                 if s.is_solid(x, y, z):
                     platform_mask.add((x, y, z))
         count = flood_count(platform_mask, (dock.x, y, dock.z))
-        print(f"platform level {dock.level} connected: {count >= dock.landing_size * dock.landing_size} flood_blocks={count}")
+        min_expected = max(20, dock.landing_width * dock.landing_depth)
+        print(f"platform level {dock.level} connected: {count >= min_expected} flood_blocks={count}")
 
     for report in s.bridge_reports:
         connected = report["connected_to_landing"] and report["connected_to_spiral"]
@@ -908,6 +1314,71 @@ def validate_connectivity(s: Structure, docking_points: list[DockingPoint]) -> N
     print(f"spiral walkway deck connected: {deck_connected}")
     print(f"detached_edge_blocks_removed: {s.detached_edge_blocks_removed}")
     print(f"floating_support_blocks_removed: {s.floating_support_blocks_removed}")
+
+
+def validate_walkable_connectivity(s: Structure, docking_points: list[DockingPoint]) -> dict[str, object]:
+    deck_connected = bool(s.deck_mask) and flood_count(s.deck_mask, next(iter(s.deck_mask))) == len(s.deck_mask)
+    if not deck_connected:
+        s.repaired_walkway_blocks += repair_deck_connectivity(s)
+        deck_connected = bool(s.deck_mask) and flood_count(s.deck_mask, next(iter(s.deck_mask))) == len(s.deck_mask)
+
+    bridge_results: dict[str, bool] = {}
+    landing_results: dict[str, bool] = {}
+    blocked_doorways = 0
+    for dock in docking_points:
+        bridge = bridge_blocks_for_floor(s, dock.walk_y)
+        landing = {p for p in s.landing_pad_mask if p[1] == dock.walk_y}
+        ring = s.main_ring_masks.get(dock.level_name, set())
+        bridge_ok = mask_touches(bridge, s.deck_mask) and mask_touches(bridge, landing)
+        if not bridge_ok:
+            before = len(s.bridge_mask)
+            build_connection_bridges(s, [dock])
+            s.repaired_bridge_blocks += max(0, len(s.bridge_mask) - before)
+            bridge = bridge_blocks_for_floor(s, dock.walk_y)
+            bridge_ok = mask_touches(bridge, s.deck_mask) and mask_touches(bridge, landing)
+        bridge_results[dock.level_name] = bridge_ok
+        landing_results[dock.level_name] = mask_touches(landing, ring)
+        fx, fz = dock.facing_vector
+        tx, tz = dock.tangent_vector
+        half = dock.opening_width // 2
+        for w in range(-half, half + 1):
+            x = round(dock.doorway_center_x + tx * w)
+            z = round(dock.doorway_center_z + tz * w)
+            for y in range(dock.walk_y + 1, dock.walk_y + dock.opening_height):
+                if s.is_solid(x, y, z):
+                    blocked_doorways += 1
+
+    stair_a = s.stair_masks.get("stair_A", set())
+    stair_b = s.stair_masks.get("stair_B", set())
+    lower_mezz_stairs = s.stair_masks.get("lower_mezzanine_A", set()) | s.stair_masks.get("lower_mezzanine_B", set())
+    middle_mezz_stairs = s.stair_masks.get("middle_mezzanine_A", set()) | s.stair_masks.get("middle_mezzanine_B", set())
+    lower_mezz = MEZZANINE_MASKS.get("lower", set())
+    middle_mezz = MEZZANINE_MASKS.get("middle", set())
+    lower_mezz_connected = mask_touches(lower_mezz_stairs, s.main_ring_masks.get("lower", set())) and mask_touches(lower_mezz_stairs, lower_mezz)
+    middle_mezz_connected = mask_touches(middle_mezz_stairs, s.main_ring_masks.get("middle", set())) and mask_touches(middle_mezz_stairs, middle_mezz)
+    stair_a_connected = mask_touches(stair_a, s.main_ring_masks.get("lower", set())) and mask_touches(stair_a, s.main_ring_masks.get("middle", set()))
+    stair_b_connected = mask_touches(stair_b, s.main_ring_masks.get("middle", set())) and mask_touches(stair_b, s.main_ring_masks.get("upper", set()))
+    report: dict[str, object] = {
+        "spiral_deck_connected": deck_connected,
+        "lower_bridge_connected": bridge_results.get("lower", False),
+        "middle_bridge_connected": bridge_results.get("middle", False),
+        "upper_bridge_connected": bridge_results.get("upper", False),
+        "lower_landing_to_ring_connected": landing_results.get("lower", False),
+        "middle_landing_to_ring_connected": landing_results.get("middle", False),
+        "upper_landing_to_ring_connected": landing_results.get("upper", False),
+        "stair_A_connected": stair_a_connected,
+        "stair_B_connected": stair_b_connected,
+        "lower_mezzanine_connected": lower_mezz_connected,
+        "middle_mezzanine_connected": middle_mezz_connected,
+        "blocked_doorways": blocked_doorways,
+        "repaired_walkway_blocks": s.repaired_walkway_blocks,
+        "repaired_bridge_blocks": s.repaired_bridge_blocks,
+        "all_bridges_connected": all(bridge_results.values()) if bridge_results else False,
+        "all_landings_connected_to_ring": all(landing_results.values()) if landing_results else False,
+    }
+    for key, value in report.items():
+        print(f"{key}: {value}")
+    return report
 
 
 def validate_interior_connectivity(s: Structure, docking_points: list[DockingPoint]) -> None:
@@ -953,7 +1424,7 @@ def validate_interior_connectivity(s: Structure, docking_points: list[DockingPoi
     for y in range(45, 108):
         for z in range(CZ - 6, CZ + 7):
             for x in range(CX - 6, CX + 7):
-                if is_inside_octagon(x, z, CX, CZ, 5) and s.is_solid(x, y, z) and s.categories[index(x, y, z)] != "central_crystal":
+                if is_inside_octagon(x, z, CX, CZ, 5) and s.is_solid(x, y, z) and s.categories[index(x, y, z)] != "central_crystal_core":
                     atrium_blocked += 1
     print(f"atrium_clear_except_crystal: {atrium_blocked == 0}")
     print(f"blocked_doorway_count: {blocked_doorways}")
@@ -987,7 +1458,7 @@ def build_discrete_bridge(
     s: Structure,
     start: tuple[int, int, int],
     end: tuple[int, int, int],
-    category: str = "spiral_walkway",
+    category: str = "bridge_deck",
 ) -> set[tuple[int, int, int]]:
     bridge_blocks: set[tuple[int, int, int]] = set()
     sx, sy, sz = start
@@ -1016,8 +1487,6 @@ def build_discrete_bridge(
                     s.set(x, y - 1, z, "deepslate_bricks", category)
                     bridge_blocks.add((x, y, z))
                     s.bridge_mask.add((x, y, z))
-                    s.protect(x, y, z)
-                    s.protect(x, y - 1, z)
         for off in range(-1, 2):
             x = round(cx + perp[0] * off)
             z = round(cz + perp[1] * off)
@@ -1025,11 +1494,8 @@ def build_discrete_bridge(
             s.set(x, y - 1, z, "deepslate_bricks", category)
             bridge_blocks.add((x, y, z))
             s.bridge_mask.add((x, y, z))
-            s.protect(x, y, z)
-            s.protect(x, y - 1, z)
             if abs(off) == 1 and i % 3 == 0:
                 s.set(x, y + 1, z, "deepslate_bricks", category)
-                s.protect(x, y + 1, z)
         last = (cx, cz)
     return bridge_blocks
 
@@ -1039,12 +1505,10 @@ def repair_bridge_endpoint(s: Structure, point: tuple[int, int, int]) -> int:
     x, y, z = point
     for dz in range(-1, 2):
         for dx in range(-1, 2):
-            if s.set(x + dx, y, z + dz, "stone_bricks", "spiral_walkway"):
+            if s.set(x + dx, y, z + dz, "stone_bricks", "bridge_deck"):
                 repaired += 1
-            s.set(x + dx, y - 1, z + dz, "deepslate_bricks", "spiral_walkway")
+            s.set(x + dx, y - 1, z + dz, "deepslate_bricks", "bridge_deck")
             s.bridge_mask.add((x + dx, y, z + dz))
-            s.protect(x + dx, y, z + dz)
-            s.protect(x + dx, y - 1, z + dz)
     return repaired
 
 
@@ -1070,6 +1534,10 @@ def validate_bridge_connectivity(
     return mask_touches(bridge_blocks, deck_mask), mask_touches(bridge_blocks, landing_pad_mask)
 
 
+def bridge_blocks_for_floor(s: Structure, y: int) -> set[tuple[int, int, int]]:
+    return {p for p in s.bridge_mask if p[1] == y}
+
+
 def nearest_mask_point(point: tuple[int, int, int], mask: set[tuple[int, int, int]], max_radius: int = 10) -> tuple[int, int, int] | None:
     px, py, pz = point
     candidates = [
@@ -1083,6 +1551,7 @@ def nearest_mask_point(point: tuple[int, int, int], mask: set[tuple[int, int, in
 
 
 def build_connection_bridges(s: Structure, docking_points: list[DockingPoint]) -> None:
+    s.bridge_reports.clear()
     for bridge_id, dock in enumerate(docking_points, start=1):
         dock_xyz = (dock.x, dock.walkable_y, dock.z)
         spiral = nearest_spiral_point_for_dock(dock.walkable_y, dock_xyz)
@@ -1097,11 +1566,9 @@ def build_connection_bridges(s: Structure, docking_points: list[DockingPoint]) -
                 extra = build_discrete_bridge(s, start, nearest_deck)
                 repaired += len(extra)
                 bridge_blocks.update(extra)
-                s.deck_mask.update(extra)
             repaired += repair_bridge_endpoint(s, start)
             for dx in range(-1, 2):
                 for dz in range(-1, 2):
-                    s.deck_mask.add((start[0] + dx, start[1], start[2] + dz))
                     bridge_blocks.add((start[0] + dx, start[1], start[2] + dz))
         if not landing_ok:
             repaired += repair_bridge_endpoint(s, end)
@@ -1119,26 +1586,53 @@ def build_connection_bridges(s: Structure, docking_points: list[DockingPoint]) -
         })
 
 
+def repair_docking_connections(s: Structure, docking_points: list[DockingPoint]) -> None:
+    build_landing_pads(s, docking_points)
+    connect_landing_to_ring_corridor(s, docking_points)
+    carve_openings(s, docking_points)
+    build_connection_bridges(s, docking_points)
+    for dock in docking_points:
+        ring = s.main_ring_masks.get(dock.level_name, set())
+        landing = {p for p in s.landing_pad_mask if p[1] == dock.walk_y}
+        if not mask_touches(landing, ring):
+            fx, fz = dock.facing_vector
+            length = max(1.0, math.hypot(fx, fz))
+            nx, nz = fx / length, fz / length
+            y = dock.walk_y
+            for r in range(13, 28):
+                cx = round(CX + nx * r)
+                cz = round(CZ + nz * r)
+                for w in range(-2, 3):
+                    x = round(cx + dock.tangent_vector[0] * w)
+                    z = round(cz + dock.tangent_vector[1] * w)
+                    if s.set(x, y, z, "stone_bricks", "landing_pad"):
+                        s.repaired_bridge_blocks += 1
+                    s.set(x, y - 1, z, "deepslate_bricks", "landing_pad")
+                    s.landing_pad_mask.add((x, y, z))
+        for report in s.bridge_reports:
+            if report["floor"] == dock.walk_y and (not report["connected_to_landing"] or not report["connected_to_spiral"]):
+                s.repaired_bridge_blocks += int(report["repaired_blocks_count"])
+
+
 def build_lantern_on_branch(s: Structure, theta: float, radius: float, y: int, color_index: int) -> None:
     colors = [
         ("cyan_stained_glass", "sea_lantern"),
-        ("lime_stained_glass", "shroomlight"),
-        ("pink_stained_glass", "sea_lantern"),
         ("yellow_stained_glass", "glowstone"),
-        ("white_stained_glass", "glowstone"),
+        ("pink_stained_glass", "sea_lantern"),
+        ("lime_stained_glass", "shroomlight"),
     ]
-    length = 5 + color_index % 4
+    length = 4 + (color_index * 2) % 4
     start = radius + 4
     end = min(radius + 4 + length, 61)
     for r in range(round(start), round(end) + 1):
         x = round(CX + math.cos(theta) * r)
         z = round(CZ + math.sin(theta) * r)
-        s.set(x, y, z, "dark_oak_log" if color_index % 2 else "deepslate_bricks", "lanterns")
+        s.set(x, y, z, "dark_oak_log" if color_index % 2 else "deepslate_bricks", "lantern_branch")
     lx = round(CX + math.cos(theta) * (end + 1))
     lz = round(CZ + math.sin(theta) * (end + 1))
     chain_len = 3 + color_index % 2
     for yy in range(y - chain_len, y + 1):
-        s.set(lx, yy, lz, "iron_bars", "lanterns")
+        s.set(lx, yy, lz, "iron_bars", "lantern_chain")
     glass, core = colors[color_index % len(colors)]
     cy = y - chain_len - 2
     lantern_radius = 1
@@ -1146,17 +1640,35 @@ def build_lantern_on_branch(s: Structure, theta: float, radius: float, y: int, c
         for dz in range(-1, 2):
             for dx in range(-1, 2):
                 if abs(dx) + abs(dy) + abs(dz) <= 3:
-                    s.set(lx + dx, cy + dy, lz + dz, glass, "lanterns")
-    s.set(lx, cy, lz, core, "lanterns")
-    s.set(lx, cy - 2, lz, "iron_bars", "lanterns")
+                    s.set(lx + dx, cy + dy, lz + dz, glass, "lantern_body")
+    s.set(lx, cy, lz, core, "lantern_body")
+    s.set(lx, cy - 2, lz, "iron_bars", "lantern_chain")
 
 
-def build_lantern_branches_along_spiral(s: Structure, lantern_count: int = 26) -> int:
-    for i in range(lantern_count):
-        t = (i + 0.45) / lantern_count
+def build_structural_lantern_branch(s: Structure, theta: float, radius: float, y: int, branch_index: int) -> None:
+    length = 3 + branch_index % 3
+    for r in range(round(radius + 3), round(radius + 3 + length) + 1):
+        x = round(CX + math.cos(theta) * r)
+        z = round(CZ + math.sin(theta) * r)
+        s.set(x, y, z, "dark_oak_log" if branch_index % 2 else "deepslate_bricks", "lantern_branch")
+
+
+def build_lantern_branches_along_spiral(s: Structure, lantern_count: int = 18) -> int:
+    branch_slots = 24
+    lit = 0
+    for i in range(branch_slots):
+        t = (i + 0.45) / branch_slots
         theta, radius, y, _ = walkway_point(t)
-        build_lantern_on_branch(s, theta, radius, y - 1, i)
-    return lantern_count
+        if t < 0.12:
+            if i % 3 == 0:
+                build_structural_lantern_branch(s, theta, radius, y - 1, i)
+            continue
+        if lit < lantern_count and i % 5 != 1:
+            build_lantern_on_branch(s, theta, radius, y - 1, lit)
+            lit += 1
+        else:
+            build_structural_lantern_branch(s, theta, radius, y - 1, i)
+    return lit
 
 
 def faceted_color(dx: int, dy: int, dz: int, shell_index: int) -> str:
@@ -1192,7 +1704,7 @@ def build_single_crystal(
                     block = faceted_color(dx, y - y0, dz, shell_index)
                 else:
                     block = "white_stained_glass" if (dx * dz + shell_index) % 5 == 0 else faceted_color(dx, y - y0, dz, shell_index + 1)
-                s.set(cx + dx, y, cz + dz, block, "central_crystal")
+                s.set(cx + dx, y, cz + dz, block, "central_crystal_core")
 
 
 def build_central_crystal_core(s: Structure) -> None:
@@ -1208,7 +1720,7 @@ def build_central_crystal_core(s: Structure) -> None:
     for y in (63, 73, 85):
         for angle in range(0, 360, 60):
             rad = math.radians(angle)
-            s.set(round(CX + math.cos(rad) * 8), y, round(CZ + math.sin(rad) * 8), "sea_lantern", "central_crystal")
+            s.set(round(CX + math.cos(rad) * 8), y, round(CZ + math.sin(rad) * 8), "sea_lantern", "central_crystal_core")
 
 
 def build_ordered_magic_crystal_core(s: Structure) -> None:
@@ -1216,51 +1728,73 @@ def build_ordered_magic_crystal_core(s: Structure) -> None:
 
 
 def build_roof_spire(s: Structure) -> None:
-    tiers = [
-        (110, 114, 25, 22),
-        (115, 125, 21, 16),
-        (126, 136, 16, 10),
-        (137, 147, 10, 4),
-        (148, 151, 4, 2),
-    ]
-    eaves = {
-        108: 27,
-        109: 26,
-        114: 23,
-        125: 18,
-        136: 12,
-        147: 6,
-    }
-    for y, radius in eaves.items():
+    # Transition arcade between upper library and roof.
+    for y, radius in ((106, 25), (107, 25), (108, 24), (109, 23)):
         for z in range(CZ - radius - 2, CZ + radius + 3):
             for x in range(CX - radius - 2, CX + radius + 3):
                 r = oct_metric(x - CX, z - CZ)
-                if radius - 3 <= r <= radius:
-                    s.set(x, y, z, "deepslate_tiles", "roof")
-                    s.set(x, y - 1, z, "deepslate_bricks", "roof")
-    for y0, y1, r0, r1 in tiers:
+                if radius - 2.2 <= r <= radius:
+                    s.set(x, y, z, "deepslate_bricks" if y < 108 else "deepslate_tiles", "roof")
+    for angle in range(0, 360, 45):
+        rad = math.radians(angle)
+        x = round(CX + math.cos(rad) * 22)
+        z = round(CZ + math.sin(rad) * 22)
+        for y in range(101, 111):
+            if y % 3 != 1:
+                s.set(x, y, z, "deepslate_bricks", "roof")
+    for angle in range(0, 360, 22):
+        if angle % 45 == 0:
+            continue
+        rad = math.radians(angle)
+        for y in (107, 108):
+            x = round(CX + math.cos(rad) * 21)
+            z = round(CZ + math.sin(rad) * 21)
+            s.set(x, y, z, "cyan_stained_glass" if angle % 44 == 0 else "deepslate_tiles", "roof")
+
+    tiers = [
+        (110, 120, 23, 18, 5),
+        (121, 134, 18, 10, 4),
+        (135, 149, 10, 3, 3),
+    ]
+    band_ys = {110, 120, 121, 134, 135, 149}
+    for y0, y1, r0, r1, cavity in tiers:
         for y in range(y0, y1 + 1):
             t = 0 if y1 == y0 else (y - y0) / (y1 - y0)
-            radius = round(r0 + (r1 - r0) * (t ** 0.75))
+            radius = round(r0 + (r1 - r0) * (t ** 0.82))
+            cavity_radius = min(cavity, max(2, radius - 4))
             for z in range(CZ - radius - 2, CZ + radius + 3):
                 for x in range(CX - radius - 2, CX + radius + 3):
                     r = oct_metric(x - CX, z - CZ)
-                    if r <= radius:
-                        a = angle_of(x - CX, z - CZ)
-                        rib = any(angle_delta(a, p) < 3 for p in range(0, 360, 45))
-                        band = y in (114, 125, 136, 147)
-                        if band or rib:
+                    if r > radius:
+                        continue
+                    a = angle_of(x - CX, z - CZ)
+                    outer_shell = radius - 2.0 <= r <= radius
+                    rib = any(angle_delta(a, p) < 3.5 for p in range(0, 360, 45)) and r >= cavity_radius
+                    band = y in band_ys and r >= cavity_radius
+                    inner_eave = y in (120, 134) and cavity_radius + 1 <= r <= cavity_radius + 3
+                    if r < cavity_radius and 114 <= y <= 145:
+                        s.carve(x, y, z)
+                        continue
+                    if outer_shell or rib or band or inner_eave:
+                        if rib or band or inner_eave:
                             block = "deepslate_tiles"
                         else:
-                            block = "weathered_copper" if (a // 45 + y // 5) % 5 == 0 else "oxidized_copper"
+                            block = "weathered_copper" if (int(a // 45) + y // 6) % 4 == 0 else "oxidized_copper"
                         s.set(x, y, z, block, "roof")
-    for y in range(151, 158):
+
+    for y in range(112, 147):
+        block = "deepslate_bricks" if y % 5 else "sea_lantern"
+        s.set(CX, y, CZ, block, "roof")
+    for y in range(116, 128):
+        if y % 3 == 0:
+            for angle in range(0, 360, 90):
+                rad = math.radians(angle)
+                s.set(round(CX + math.cos(rad) * 4), y, round(CZ + math.sin(rad) * 4), "deepslate_tiles", "roof")
+    for y in range(150, 157):
         s.set(CX, y, CZ, "gold_block", "roof")
-    for y in range(153, 158):
-        for dz in (-1, 0, 1):
-            if dz == 0:
-                continue
-            s.set(CX, y, CZ + dz, "gold_block", "roof")
+    for y in range(153, 157):
+        s.set(CX + 1, y, CZ, "gold_block", "roof")
+        s.set(CX - 1, y, CZ, "gold_block", "roof")
 
 
 def build_hanging_bottom_crystal(s: Structure) -> None:
@@ -1294,21 +1828,175 @@ def build_hanging_bottom_crystal(s: Structure) -> None:
         s.set(CX - 1, y, CZ, "cyan_stained_glass", "bottom_crystal")
 
 
+DEBUG_BG = (13, 15, 21, 255)
+DEBUG_TAG_COLORS = {
+    "spiral_deck": (132, 138, 142, 230),
+    "bottom_root": (160, 170, 168, 245),
+    "bridge_deck": (220, 224, 214, 245),
+    "landing_pad": (248, 214, 88, 245),
+    "main_ring_corridor": (126, 78, 44, 220),
+    "doorway_frame": (86, 105, 128, 240),
+    "spiral_curb": (62, 70, 82, 210),
+    "spiral_support": (56, 62, 72, 190),
+}
+
+
+def save_debug_top(
+    s: Structure,
+    out_path: str,
+    tags: set[str],
+    overlays: list[tuple[int, int, int, tuple[int, int, int, int]]] | None = None,
+) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    canvas = (1100, 1100)
+    min_x, max_x = 0, SIZE_X - 1
+    min_z, max_z = 0, SIZE_Z - 1
+    scale = min((canvas[0] - 80) / SIZE_X, (canvas[1] - 80) / SIZE_Z)
+    ox = (canvas[0] - SIZE_X * scale) / 2
+    oy = (canvas[1] - SIZE_Z * scale) / 2
+    img = Image.new("RGBA", canvas, DEBUG_BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    for y in range(SIZE_Y):
+        shade = 0.45 + 0.55 * (y / max(1, SIZE_Y - 1))
+        for z in range(min_z, max_z + 1):
+            for x in range(min_x, max_x + 1):
+                cat = s.categories[index(x, y, z)]
+                if cat not in tags:
+                    continue
+                base = DEBUG_TAG_COLORS.get(cat, (210, 210, 210, 220))
+                color = (int(base[0] * shade), int(base[1] * shade), int(base[2] * shade), base[3])
+                x0 = ox + x * scale
+                y0 = oy + z * scale
+                draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=color)
+    if overlays:
+        for x, _y, z, color in overlays:
+            x0 = ox + x * scale
+            y0 = oy + z * scale
+            r = max(3, scale * 1.8)
+            draw.ellipse((x0 - r, y0 - r, x0 + r, y0 + r), fill=color)
+    img.convert("RGB").save(out_path)
+
+
+def save_debug_mask_top(
+    out_path: str,
+    mask: set[tuple[int, int, int]],
+    color: tuple[int, int, int, int],
+    overlays: list[tuple[int, int, int, tuple[int, int, int, int]]] | None = None,
+) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    canvas = (1100, 1100)
+    scale = min((canvas[0] - 80) / SIZE_X, (canvas[1] - 80) / SIZE_Z)
+    ox = (canvas[0] - SIZE_X * scale) / 2
+    oy = (canvas[1] - SIZE_Z * scale) / 2
+    img = Image.new("RGBA", canvas, DEBUG_BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    for x, y, z in sorted(mask, key=lambda p: p[1]):
+        shade = 0.55 + 0.45 * (y / max(1, SIZE_Y - 1))
+        c = (int(color[0] * shade), int(color[1] * shade), int(color[2] * shade), color[3])
+        x0 = ox + x * scale
+        y0 = oy + z * scale
+        draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=c)
+    if overlays:
+        for x, _y, z, ocolor in overlays:
+            x0 = ox + x * scale
+            y0 = oy + z * scale
+            r = max(4, scale * 2.2)
+            draw.ellipse((x0 - r, y0 - r, x0 + r, y0 + r), fill=ocolor)
+    img.convert("RGB").save(out_path)
+
+
+def save_roof_cutaway(s: Structure, out_path: str) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    canvas = (900, 900)
+    min_x, max_x = CX - 30, CX + 30
+    min_y, max_y = 100, 158
+    scale = min((canvas[0] - 80) / (max_x - min_x + 1), (canvas[1] - 80) / (max_y - min_y + 1))
+    ox = (canvas[0] - (max_x - min_x + 1) * scale) / 2
+    oy = canvas[1] - 40
+    img = Image.new("RGBA", canvas, DEBUG_BG)
+    draw = ImageDraw.Draw(img, "RGBA")
+    colors = {
+        "roof": (50, 210, 190, 230),
+        "air": (32, 38, 52, 80),
+        "central_crystal_core": (230, 255, 250, 230),
+    }
+    for y in range(min_y, max_y + 1):
+        for x in range(min_x, max_x + 1):
+            chosen = "air"
+            cat = s.categories[index(x, y, CZ)] if in_bounds(x, y, CZ) else "air"
+            if cat == "roof" or cat == "central_crystal_core":
+                chosen = cat
+            if chosen == "air":
+                continue
+            color = colors[chosen]
+            x0 = ox + (x - min_x) * scale
+            y0 = oy - (y - min_y + 1) * scale
+            draw.rectangle((x0, y0, x0 + scale, y0 + scale), fill=color)
+    # Mark intended internal cavity.
+    for y in range(114, 146):
+        for x in range(CX - 5, CX + 6):
+            x0 = ox + (x - min_x) * scale
+            y0 = oy - (y - min_y + 1) * scale
+            draw.rectangle((x0, y0, x0 + scale, y0 + scale), outline=(255, 230, 80, 140))
+    img.convert("RGB").save(out_path)
+
+
+def write_debug_previews(s: Structure, docking_points: list[DockingPoint]) -> None:
+    out_dir = os.path.join("out", "previews")
+    save_debug_top(
+        s,
+        os.path.join(out_dir, "debug_spiral_deck.png"),
+        {"spiral_deck", "bridge_deck", "landing_pad"},
+    )
+    overlays: list[tuple[int, int, int, tuple[int, int, int, int]]] = []
+    for dock in docking_points:
+        overlays.append((dock.doorway_center_x, dock.walk_y, dock.doorway_center_z, (255, 72, 72, 255)))
+        overlays.append((dock.landing_center_x, dock.walk_y, dock.landing_center_z, (255, 230, 72, 255)))
+    save_debug_top(
+        s,
+        os.path.join(out_dir, "debug_docking.png"),
+        {"bridge_deck", "landing_pad", "main_ring_corridor", "doorway_frame", "spiral_deck"},
+        overlays,
+    )
+    removal_overlays = [(x, y, z, (255, 42, 42, 255)) for x, y, z, _reason in s.removed_debug]
+    save_debug_top(
+        s,
+        os.path.join(out_dir, "debug_cleanup_removed.png"),
+        {"spiral_deck", "bridge_deck", "landing_pad", "spiral_curb", "spiral_support"},
+        removal_overlays,
+    )
+    save_roof_cutaway(s, os.path.join(out_dir, "roof_cutaway.png"))
+    lower_mask = set(s.lower_taper_mask) | set(s.bottom_root_mask)
+    lower_overlays = [(CX, BOTTOM_APEX_ROOT_Y, CZ, (70, 235, 255, 255))]
+    save_debug_mask_top(
+        os.path.join(out_dir, "debug_lower_taper_only.png"),
+        lower_mask,
+        (150, 164, 166, 245),
+        lower_overlays,
+    )
+
+
 def main() -> None:
     s = Structure()
     build_central_library_core(s)
     docking_points = define_docking_points()
     rebuild_internal_system(s, docking_points)
+    soften_lower_outer_platform(s, docking_points)
+    build_ordered_magic_crystal_core(s)
     build_spiral_walkway(s)
-    build_connection_bridges(s, docking_points)
     deck_repaired_blocks = repair_deck_connectivity(s)
+    s.repaired_walkway_blocks += deck_repaired_blocks
+    repair_docking_connections(s, docking_points)
+    build_bottom_taper_root(s)
     build_walkway_edges(s)
     lantern_count = build_lantern_branches_along_spiral(s)
-    build_ordered_magic_crystal_core(s)
     build_roof_spire(s)
     build_hanging_bottom_crystal(s)
-    carve_openings(s, docking_points)
+    repair_docking_connections(s, docking_points)
     cleanup_floating_blocks(s)
+    cleanup_internal_clutter(s, docking_points)
+    walkable_report = validate_walkable_connectivity(s, docking_points)
+    write_debug_previews(s, docking_points)
     write_mcstructure(s)
 
     counts = Counter(s.blocks)
@@ -1316,16 +2004,31 @@ def main() -> None:
     print(f"Wrote {OUT_PATH}")
     print(f"Palette entries: {len(BLOCKS)}")
     print(f"Non-air blocks: {non_air}")
+    print(f"total_non_air_blocks: {non_air}")
     print(f"Bookshelf blocks: {counts[PALETTE['bookshelf']]}")
-    print(f"Spiral walkway blocks: {s.stats['spiral_walkway']}")
+    print(f"spiral_deck_blocks: {len(s.deck_mask)}")
+    print(f"lower_taper_blocks: {len(s.lower_taper_mask)}")
+    print(f"bottom_root_blocks: {len(s.bottom_root_mask)}")
+    print(f"spiral_curb_blocks: {sum(1 for p in s.curb_mask if tag_at(s, p) == 'spiral_curb')}")
+    print(f"spiral_support_blocks: {sum(1 for p in s.support_mask if tag_at(s, p) == 'spiral_support')}")
+    print(f"bridge_deck_blocks: {len(s.bridge_mask)}")
+    print(f"landing_pad_blocks: {len(s.landing_pad_mask)}")
     print(f"Lantern count: {lantern_count}")
-    print(f"Lantern blocks: {s.stats['lanterns']}")
-    print(f"Central crystal blocks: {s.stats['central_crystal']}")
+    print(f"Lantern blocks: {s.stats['lantern_branch'] + s.stats['lantern_chain'] + s.stats['lantern_body']}")
+    print(f"Central crystal blocks: {s.stats['central_crystal_core']}")
     print(f"Roof blocks: {s.stats['roof']}")
     print(f"Bottom crystal blocks: {s.stats['bottom_crystal']}")
-    print(f"detached_edge_blocks_removed: {s.detached_edge_blocks_removed}")
-    print(f"floating_support_blocks_removed: {s.floating_support_blocks_removed}")
-    print(f"deck_connectivity_repaired_blocks: {deck_repaired_blocks}")
+    print(f"detached_curb_removed: {s.detached_edge_blocks_removed}")
+    print(f"detached_support_removed: {s.floating_support_blocks_removed}")
+    print(f"detached_noise_removed: {s.detached_noise_removed}")
+    print(f"detached_lantern_parts_removed: {s.detached_lantern_parts_removed}")
+    print(f"removed_internal_clutter_count: {s.removed_internal_clutter_count}")
+    print(f"repaired_walkway_blocks: {s.repaired_walkway_blocks}")
+    print(f"repaired_bridge_blocks: {s.repaired_bridge_blocks}")
+    print(f"blocked_doorways_after_cleanup: {walkable_report['blocked_doorways']}")
+    print(f"spiral_deck_connected: {walkable_report['spiral_deck_connected']}")
+    print(f"all_bridges_connected: {walkable_report['all_bridges_connected']}")
+    print(f"all_landings_connected_to_ring: {walkable_report['all_landings_connected_to_ring']}")
     for report in s.bridge_reports:
         print(
             "Bridge {bridge_id}: floor={floor} dock={dock} start={start} end={end} "
